@@ -1,0 +1,57 @@
+name: Link Issues from PR Title
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  link-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Link issues from PR title
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            
+            // PR 타이틀에서 [#숫자] 패턴 찾기
+            const issueNumbers = [];
+            const pattern = /\[#(\d+)\]/g;
+            
+            let match;
+            while ((match = pattern.exec(pr.title)) !== null) {
+              const num = parseInt(match[1]);
+              if (num) issueNumbers.push(num);
+            }
+            
+            if (issueNumbers.length > 0) {
+              try {
+                // PR 본문 가져오기
+                let body = pr.body || '';
+                
+                // 기존 "Resolves #" 라인들 제거
+                body = body.replace(/\nResolves #\d+/g, '');
+                
+                // 새로운 "Resolves #" 라인들 추가
+                for (const issueNumber of issueNumbers) {
+                  body += `\nResolves #${issueNumber}`;
+                }
+                
+                // PR 업데이트
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  body: body
+                });
+                
+                console.log(`PR #${pr.number}에 이슈 ${issueNumbers.join(', ')} 링크 완료`);
+              } catch (error) {
+                console.log('PR 업데이트 중 에러 발생:', error);
+              }
+            }
