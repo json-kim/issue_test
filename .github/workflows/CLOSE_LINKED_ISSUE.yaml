@@ -1,0 +1,51 @@
+name: Close Linked Issues
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  close-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close linked issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            
+            // PR 본문에서만 closing 키워드와 이슈 번호 찾기
+            const issueNumbers = [];
+            const closingPattern = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
+            
+            let match;
+            while ((match = closingPattern.exec(pr.body || '')) !== null) {
+              const num = parseInt(match[1]);
+              if (num) issueNumbers.push(num);
+            }
+            
+            // 중복 제거
+            const uniqueIssues = [...new Set(issueNumbers)];
+            
+            // 이슈들 닫기
+            for (const issueNumber of uniqueIssues) {
+              try {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  state: 'closed'
+                });
+                
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body: `이 이슈는 PR #${pr.number}가 머지되어 자동으로 닫혔습니다.`
+                });
+              } catch (error) {
+                console.log(`이슈 #${issueNumber} 처리 중 에러 발생:`, error);
+              }
+            }
