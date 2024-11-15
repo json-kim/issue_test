@@ -1,0 +1,156 @@
+name: Move to In Review
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+  repository-projects: write
+
+jobs:
+  move-to-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move PR and Issues to In Review
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            async function moveItemToInReview(projectItems) {
+              for (const item of projectItems) {
+                const project = item.project;
+                const statusField = project.fields.nodes.find(field => 
+                  field.name.toLowerCase() === 'status'
+                );
+                
+                if (statusField) {
+                  const inReviewOption = statusField.options.find(option => 
+                    option.name.toLowerCase() === 'in review'
+                  );
+                  
+                  if (inReviewOption) {
+                    await github.graphql(`
+                      mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                        updateProjectV2ItemFieldValue(
+                          input: {
+                            projectId: $projectId
+                            itemId: $itemId
+                            fieldId: $fieldId
+                            value: { singleSelectOptionId: $optionId }
+                          }
+                        ) {
+                          projectV2Item {
+                            id
+                          }
+                        }
+                      }
+                    `, {
+                      projectId: project.id,
+                      itemId: item.id,
+                      fieldId: statusField.id,
+                      optionId: inReviewOption.id
+                    });
+                  }
+                }
+              }
+            }
+
+            // PR의 프로젝트 정보 가져오기
+            const prQuery = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project {
+                          id
+                          title
+                          fields(first: 20) {
+                            nodes {
+                              ... on ProjectV2SingleSelectField {
+                                id
+                                name
+                                options {
+                                  id
+                                  name
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            // 연결된 이슈 찾기
+            const issueNumbers = [];
+            // PR 타이틀에서 [#숫자] 패턴 찾기
+            const titlePattern = /\[#(\d+)\]/g;
+            let match;
+            while ((match = titlePattern.exec(pr.title)) !== null) {
+              const num = parseInt(match[1]);
+              if (num) issueNumbers.push(num);
+            }
+
+            // PR을 In Review로 이동
+            const prResult = await github.graphql(prQuery, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              number: pr.number
+            });
+
+            await moveItemToInReview(prResult.repository.pullRequest.projectItems.nodes);
+
+            // 연결된 이슈들을 In Review로 이동
+            for (const issueNumber of issueNumbers) {
+              const issueQuery = `
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    issue(number: $number) {
+                      projectItems(first: 10) {
+                        nodes {
+                          id
+                          project {
+                            id
+                            title
+                            fields(first: 20) {
+                              nodes {
+                                ... on ProjectV2SingleSelectField {
+                                  id
+                                  name
+                                  options {
+                                    id
+                                    name
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              try {
+                const issueResult = await github.graphql(issueQuery, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  number: issueNumber
+                });
+                
+                await moveItemToInReview(issueResult.repository.issue.projectItems.nodes);
+                console.log(`이슈 #${issueNumber}를 In Review로 이동했습니다.`);
+              } catch (error) {
+                console.log(`이슈 #${issueNumber} 처리 중 에러 발생:`, error);
+              }
+            }
